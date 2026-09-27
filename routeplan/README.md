@@ -4,6 +4,18 @@
 
 ## 运行
 
+推荐从项目根目录启动完整开发环境（Docker、Java 21、Maven、Node.js）：
+
+```bash
+./scripts/start-dev.sh
+# 前端 http://localhost:3000，后端 http://localhost:8081
+# Ctrl+C 停止前后端；bash scripts/stop-dev.sh 同时停止数据库
+```
+
+日志保存在根目录 `.run/backend.log` 和 `.run/frontend.log`。macOS 会自动选择已安装的 Java 21。
+
+仅启动前端时，在 `routeplan/` 目录运行（后端需另外启动）：
+
 ```bash
 # 任意静态服务器,例如:
 npx serve .
@@ -11,6 +23,8 @@ npx serve .
 ```
 
 直接 `file://` 也能跑,但 Babel 在 file 协议下偶尔会报跨域,推荐用 serve。
+
+地点缓存回归测试（在项目根目录运行）：`node --test routeplan/tests/poi-cache.test.cjs`。
 
 ## 文件结构
 

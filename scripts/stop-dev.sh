@@ -1,28 +1,35 @@
 #!/bin/bash
-# ============================================
-# AI Route Planner — 停止所有开发服务
-# ============================================
+# Stop the development processes, including Maven/npx child processes.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "Stopping AI Route Planner services..."
+stop_process_tree() {
+    local pid="$1" child
+    case "$pid" in ''|*[!0-9]*|0|1) return ;; esac
+    for child in $(ps -eo pid=,ppid= | awk -v parent="$pid" '$2 == parent { print $1 }'); do
+        stop_process_tree "$child"
+    done
+    kill "$pid" 2>/dev/null || true
+}
 
-# Stop processes by PID files
-if [ -f "$PROJECT_DIR/.run/backend.pid" ]; then
-    kill "$(cat "$PROJECT_DIR/.run/backend.pid")" 2>/dev/null && echo "  Backend stopped"
-    rm "$PROJECT_DIR/.run/backend.pid"
+for service in frontend backend metro; do
+    pid_file="$PROJECT_DIR/.run/$service.pid"
+    if [ -f "$pid_file" ]; then
+        pid="$(cat "$pid_file")"
+        rm -f "$pid_file"
+        stop_process_tree "$pid"
+        echo "Stopped $service"
+    fi
+done
+
+# Ctrl+C keeps the database running; explicit stop only stops this project's DB.
+if [ "${1:-}" != --keep-db ]; then
+    cd "$PROJECT_DIR"
+    if docker compose version >/dev/null 2>&1; then
+        docker compose stop postgres
+    else
+        docker-compose stop postgres
+    fi
 fi
-
-if [ -f "$PROJECT_DIR/.run/metro.pid" ]; then
-    kill "$(cat "$PROJECT_DIR/.run/metro.pid")" 2>/dev/null && echo "  Metro stopped"
-    rm "$PROJECT_DIR/.run/metro.pid"
-fi
-
-# Stop docker containers
-cd "$PROJECT_DIR"
-docker compose down 2>/dev/null && echo "  Docker containers stopped"
-
-rm -rf "$PROJECT_DIR/.run"
-echo "All services stopped."

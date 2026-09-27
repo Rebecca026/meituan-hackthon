@@ -1,60 +1,89 @@
 #!/bin/bash
-# ============================================
-# AI Route Planner — 一键启动开发环境 (Windows Git Bash / macOS)
-# ============================================
+# AI Route Planner — Web 前端 + Spring Boot 开发环境
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-echo "============================================"
-echo "  AI Route Planner — 启动开发环境"
-echo "============================================"
-
-# 1. Start PostgreSQL
-echo "[1/3] Starting PostgreSQL..."
 cd "$PROJECT_DIR"
-docker compose up -d postgres
-echo "  PostgreSQL started on localhost:5433"
 
-# 2. Start Backend
-echo "[2/3] Starting Backend (Spring Boot on :8080)..."
-cd "$PROJECT_DIR"
-mvn spring-boot:run &
-BACKEND_PID=$!
-echo "  Backend PID: $BACKEND_PID"
-
-# Wait for backend to be ready
-echo "  Waiting for backend health check..."
-for i in $(seq 1 30); do
-    if curl -s http://localhost:8080/api/route/health > /dev/null 2>&1; then
-        echo "  Backend is ready!"
-        break
-    fi
-    sleep 2
+for command in mvn npx curl; do
+    command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
 done
 
-# 3. Start Frontend (Metro bundler)
-echo "[3/3] Starting Frontend (React Native Metro)..."
-cd "$PROJECT_DIR/LiquidRoute"
-npx react-native start &
-METRO_PID=$!
-echo "  Metro PID: $METRO_PID"
+# macOS terminals may still default to Java 8 even when Java 21 is installed.
+if [ "$(uname -s)" = Darwin ]; then
+    if DEV_JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null); then
+        export JAVA_HOME="$DEV_JAVA_HOME"
+        export PATH="$JAVA_HOME/bin:$PATH"
+    fi
+fi
 
-echo ""
-echo "============================================"
-echo "  All services started!"
-echo "  Backend:  http://localhost:8080"
-echo "  Health:   http://localhost:8080/api/route/health"
-echo "  Frontend: http://localhost:8081 (Metro)"
-echo ""
-echo "  PIDs: Backend=$BACKEND_PID Metro=$METRO_PID"
-echo "  Stop with: ./scripts/stop-dev.sh"
-echo "============================================"
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+else
+    echo "Docker Compose is required." >&2
+    exit 1
+fi
 
-# Write PIDs for stop script
+for service in backend frontend; do
+    pid_file="$PROJECT_DIR/.run/$service.pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        echo "Development services are already running. Stop them with ./scripts/stop-dev.sh first." >&2
+        exit 1
+    fi
+done
+
 mkdir -p "$PROJECT_DIR/.run"
-echo "$BACKEND_PID" > "$PROJECT_DIR/.run/backend.pid"
-echo "$METRO_PID" > "$PROJECT_DIR/.run/metro.pid"
+cleanup() { bash "$SCRIPT_DIR/stop-dev.sh" --keep-db; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-wait
+echo "[1/3] Starting PostgreSQL..."
+"${COMPOSE[@]}" up -d postgres
+
+echo "[2/3] Starting Backend (http://localhost:8081)..."
+mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8081 > "$PROJECT_DIR/.run/backend.log" 2>&1 &
+BACKEND_PID=$!
+echo "$BACKEND_PID" > "$PROJECT_DIR/.run/backend.pid"
+
+wait_for_service() {
+    local pid="$1" url="$2" log="$3"
+    for ((i=0; i<60; i++)); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Service exited. See $log" >&2
+            tail -n 30 "$log"
+            return 1
+        fi
+        if curl --fail --silent --max-time 2 "$url" >/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "Service did not become ready: $url. See $log" >&2
+    tail -n 30 "$log"
+    return 1
+}
+
+wait_for_service "$BACKEND_PID" http://localhost:8081/api/route/health "$PROJECT_DIR/.run/backend.log"
+
+echo "[3/3] Starting Web Frontend (routeplan/)..."
+npx --yes serve "$PROJECT_DIR/routeplan" --listen 3000 --no-port-switching > "$PROJECT_DIR/.run/frontend.log" 2>&1 &
+FRONTEND_PID=$!
+echo "$FRONTEND_PID" > "$PROJECT_DIR/.run/frontend.pid"
+wait_for_service "$FRONTEND_PID" http://localhost:3000/index.html "$PROJECT_DIR/.run/frontend.log"
+
+echo ""
+echo "Frontend: http://localhost:3000"
+echo "Backend:  http://localhost:8081"
+echo "Logs:     $PROJECT_DIR/.run/"
+echo "Press Ctrl+C to stop, or run ./scripts/stop-dev.sh"
+
+# Detect either service exiting; a plain 'wait' can hide a failed child.
+while kill -0 "$BACKEND_PID" 2>/dev/null && kill -0 "$FRONTEND_PID" 2>/dev/null; do
+    sleep 2
+done
+echo "A development service stopped. Check .run/ for logs." >&2
+exit 1

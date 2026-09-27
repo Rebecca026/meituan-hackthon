@@ -59,12 +59,19 @@
         var pois = await res.json();
         if (!pois || pois.length < 5) throw new Error('Insufficient POIs: ' + (pois ? pois.length : 0));
 
-        var dict = {};
+        var dict = Object.create(null);
         var list = [];
         pois.forEach(function(p) {
           var adapted = adaptPOI(p);
           var key = p.name;
-          while (dict[key]) key = p.name + ' (' + p.district + ')';
+          if (dict[key]) {
+            var baseKey = p.name + ' (' + p.district + ')';
+            key = baseKey;
+            var suffix = 2;
+            // Names and districts are not unique, even for different POI IDs.
+            // Advance on every collision so preloading cannot block the UI.
+            while (dict[key]) key = baseKey + ' #' + suffix++;
+          }
           dict[key] = adapted;
           list.push(adapted);
         });
