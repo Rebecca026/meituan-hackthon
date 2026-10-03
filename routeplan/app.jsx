@@ -209,7 +209,8 @@ function App() {
 
   // ─── Map backend IntentAnalysisResult → frontend nl format ──
   const mapApiToNL = (result, rawText) => {
-    var scene = detectSceneFromIntent(result.intent);
+    var explicitScene = window.analyzeNL ? window.analyzeNL(rawText).scene : null;
+    var scene = explicitScene || detectSceneFromIntent(result.intent);
     var extracted = {
       time: result.intent && result.intent.startTime ? result.intent.startTime : null,
       place: result.intent && result.intent.district || null,

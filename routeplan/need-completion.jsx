@@ -884,7 +884,7 @@ function RouteOption({ route, index, total, onOpenDetail }) {
 // `summaryNode` lets the caller override the default ParsingSummary banner —
 // used by the NL paths (complete / assumption / conflict / followup).
 // `readOnly` hides the bottom quick-adjust chip row — for history items.
-function RouteOptionsCard({ scene, answers, defaulted, summaryNode, readOnly, routes: routesProp, onOpenDetail, onSwap, onChip, city, onCompare }) {
+function RouteOptionsCard({ scene, answers, budget, defaulted, summaryNode, readOnly, routes: routesProp, onOpenDetail, onSwap, onChip, city, onCompare }) {
   var routes = routesProp && routesProp.length > 0
     ? routesProp
     : (window.buildRoutesForScene && window.buildRoutesForScene(scene, answers, city || window._currentCity))
@@ -904,18 +904,17 @@ function RouteOptionsCard({ scene, answers, defaulted, summaryNode, readOnly, ro
   // Stamp _scene on each route so getPlacesForRoute can find places
   // Also add default constraint_match for mock routes that don't have it
   routes = routes.map(function(r) {
-    r._scene = scene;
-    if (!r.constraintMatch) {
-      r.constraintMatch = {
-        budget: '符合',
-        queue: (r.risks || []).some(function(rk) { return rk.indexOf('排队') !== -1 || rk.indexOf('等位') !== -1; }) ? '可能排队' : '符合',
-        open_time: '符合',
-        distance: (function() {
-          var dist = (r.total_distance || '');
-          if (dist.indexOf('km') !== -1) { var km = parseFloat(dist); return km > 2 ? '较远' : '适中'; }
-          return '适中';
-        })()
-      };
+    r = Object.assign({}, r, { _scene: scene });
+    r.constraintMatch = Object.assign({ budget: '待确认', queue: '待确认', open_time: '待确认', distance: '待确认' }, r.constraintMatch);
+    var requestedBudget = budget != null ? budget : answers && answers.budget;
+    var limit = requestedBudget == null ? r._budgetLimit : window.budgetLimit(requestedBudget);
+    if (requestedBudget != null && limit == null) {
+      delete r._budgetLimit;
+      r.constraintMatch.budget = /不限|不设上限|看心情/.test(String(requestedBudget)) ? '不限' : '待确认';
+    }
+    if (limit != null) {
+      r._budgetLimit = limit;
+      r.constraintMatch.budget = window.budgetMatch(r.total_avg, limit);
     }
     return r;
   });
@@ -945,7 +944,11 @@ function RouteOptionsCard({ scene, answers, defaulted, summaryNode, readOnly, ro
 
   return (
     <div className="fade-up" style={{ padding: '4px 0 0' }}>
-      {summaryNode || <ParsingSummary scene={scene} answers={answers} defaulted={defaulted} routeCount={routes.length} />}
+      {routes.some(function(r) { return r._dataWarning; }) ? (
+        <div role="status" style={{ margin: '10px 18px', padding: '12px', borderRadius: 10, background: '#FFF1DE', color: '#9C4200', fontSize: 12, lineHeight: 1.6 }}>
+          {routes.find(function(r) { return r._dataWarning; })._dataWarning}
+        </div>
+      ) : summaryNode || <ParsingSummary scene={scene} answers={answers} defaulted={defaulted} routeCount={routes.length} />}
 
       {/* Section label */}
       {!readOnly && (

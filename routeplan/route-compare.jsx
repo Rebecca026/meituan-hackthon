@@ -31,13 +31,15 @@ function StarRow({ score }) {
 function CompareRow({ label, icon, values, format, highlight }) {
   var numericValues = values.map(function(v) {
     if (typeof v === 'number') return v;
-    return parseFloat(String(v).replace(/[^0-9.]/g, '')) || 0;
+    return null;
   });
 
   var bestIdx = -1;
-  if (highlight === 'highest') {
+  var comparable = numericValues.every(function(v) { return v != null && Number.isFinite(v); });
+  var tied = comparable && numericValues.every(function(v) { return v === numericValues[0]; });
+  if (comparable && !tied && highlight === 'highest') {
     bestIdx = numericValues.indexOf(Math.max.apply(null, numericValues));
-  } else if (highlight === 'lowest') {
+  } else if (comparable && !tied && highlight === 'lowest') {
     bestIdx = numericValues.indexOf(Math.min.apply(null, numericValues));
   }
 
@@ -55,7 +57,7 @@ function CompareRow({ label, icon, values, format, highlight }) {
       </div>
       {values.map(function(v, i) {
         var isBest = i === bestIdx;
-        var displayVal = format ? format(v) : v;
+        var displayVal = format ? format(v, i) : v;
         return (
           <div key={i} style={{
             flex: 1, textAlign: 'center',
@@ -66,11 +68,11 @@ function CompareRow({ label, icon, values, format, highlight }) {
               fontSize: 13.5, fontWeight: isBest ? 700 : 500,
               color: isBest ? '#FF6633' : '#1A1A1A',
             }}>
-              {displayVal}
+              {displayVal == null ? '暂无数据' : displayVal}
             </span>
             {isBest && (
               <div style={{ fontSize: 9, color: '#FF6633', fontWeight: 600, marginTop: 1 }}>
-                最优
+                {highlight === 'highest' ? '更高' : '更低'}
               </div>
             )}
           </div>
@@ -89,29 +91,23 @@ function RouteComparePage({ routes, onBack, onSelectRoute }) {
     return { label: r.positioning || ('方案 ' + (i + 1)), dot: t.dot, soft: t.soft, id: r.id };
   });
 
-  function fmtMinutes(v) { return typeof v === 'number' ? v + '分钟' : String(v); }
-  function fmtYuan(v) { return '¥' + (typeof v === 'number' ? v : String(v)); }
+  function fmtMinutes(v) { return v == null ? '暂无数据' : window.fmtDuration(v); }
+  function fmtYuan(v) { return v == null ? '暂无数据' : '¥' + v; }
 
-  var budgetValues = routes.map(function(r) { return r.total_avg || 0; });
+  var budgetValues = routes.map(function(r) { return r.total_avg == null ? null : r.total_avg; });
   var timeValues = routes.map(function(r) {
-    if (r.total_walking_minutes) return r.total_walking_minutes;
-    var match = (r.total_time || '').match(/(\d+)/);
-    return match ? parseInt(match[1], 10) : 0;
+    return window.durationMinutes(r.total_duration_minutes != null ? r.total_duration_minutes : r.total_time);
   });
   var walkingValues = routes.map(function(r) {
-    if (r.total_walking_minutes) return r.total_walking_minutes;
-    if (r.total_distance) {
-      var m = String(r.total_distance).match(/([\d.]+)/);
-      return m ? parseFloat(m[1]) * 1000 / 80 : 0;
-    }
-    return 0;
+    return window.routeWalkingMinutes(r);
   });
   var queueValues = routes.map(function(r) {
+    if (r._isDemo || !r.constraintMatch || r.constraintMatch.queue === '待确认') return null;
     if (r.constraintMatch && r.constraintMatch.queue === '可能排队') return 2;
     if (r.risks && r.risks.some(function(rk) { return rk.indexOf('排队') !== -1 || rk.indexOf('等位') !== -1; })) return 1;
     return 0;
   });
-  var prefValues = routes.map(function(r) { return r._preferenceScore || 50; });
+  var prefValues = routes.map(function(r) { return r._preferenceScore == null ? null : r._preferenceScore; });
   var poiCounts = routes.map(function(r) { return (r.pois || []).length; });
 
   return (
@@ -172,19 +168,21 @@ function RouteComparePage({ routes, onBack, onSelectRoute }) {
           </div>
 
           <CompareRow label="预算" icon="Wallet" values={budgetValues} format={fmtYuan} highlight="lowest" />
-          <CompareRow label="耗时" icon="Clock" values={timeValues} format={fmtMinutes} highlight="lowest" />
-          <CompareRow label="步行" icon="Footprints" values={walkingValues} format={function(v) { return Math.round(v) + '分钟'; }} highlight="lowest" />
-          <CompareRow label="POI数" icon="MapPin" values={poiCounts} format={function(v) { return v + '个'; }} highlight="highest" />
+          <CompareRow label="总耗时" icon="Clock" values={timeValues} format={function(v, i) {
+            return v == null ? routes[i].total_time || '暂无数据' : fmtMinutes(v);
+          }} highlight="lowest" />
+          <CompareRow label="步行" icon="Footprints" values={walkingValues} format={fmtMinutes} highlight="lowest" />
+          <CompareRow label="停靠地点" icon="MapPin" values={poiCounts} format={function(v) { return v + '个'; }} />
 
           <div style={{ fontSize: 11, fontWeight: 700, color: '#8E8E93', marginTop: 16, marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>
             风险与质量
           </div>
 
           <CompareRow label="排队风险" icon="AlertTriangle" values={queueValues} format={function(v) {
-            return v === 0 ? '低' : v === 1 ? '中' : '高';
+            return v == null ? '待确认' : v === 0 ? '低' : v === 1 ? '中' : '高';
           }} highlight="lowest" />
 
-          <CompareRow label="偏好匹配" icon="Sparkles" values={prefValues} format={function(v) { return v + '分'; }} highlight="highest" />
+          <CompareRow label="偏好匹配" icon="Sparkles" values={prefValues} format={function(v) { return v == null ? '暂无数据' : v + '分'; }} highlight="highest" />
 
           {/* Star row */}
           <div style={{
@@ -200,7 +198,7 @@ function RouteComparePage({ routes, onBack, onSelectRoute }) {
             </div>
             {prefValues.map(function(v, i) { return (
               <div key={i} style={{ flex: 1, textAlign: 'center' }}>
-                <StarRow score={v} />
+                {v == null ? '暂无数据' : <StarRow score={v} />}
               </div>
             );})}
           </div>

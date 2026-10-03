@@ -86,10 +86,46 @@ function toneForGoal(goal) {
 
 // ─── Formatting helpers ───────────────────────────────────────────
 function fmtDuration(minutes) {
+  if (minutes == null || !Number.isFinite(Number(minutes)) || Number(minutes) < 0) return '暂无数据';
+  minutes = Math.round(Number(minutes));
   if (minutes < 60) return Math.round(minutes) + ' 分钟';
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
   return m > 0 ? h + ' 小时 ' + m + ' 分钟' : h + ' 小时';
+}
+
+// Keep numeric metrics separate from display text. Missing values are not zero.
+function durationMinutes(value) {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : null;
+  var text = String(value || '').trim();
+  if (!text || /[-–—~至]/.test(text)) return null;
+  var hours = text.match(/([\d.]+)\s*(?:小时|小時|h)/i);
+  var mins = text.match(/([\d.]+)\s*(?:分钟|分鐘|min)/i);
+  return hours || mins ? Number(hours ? hours[1] : 0) * 60 + Number(mins ? mins[1] : 0) : null;
+}
+
+function budgetLimit(value) {
+  if (value == null || /不限|不设上限|看心情|以上|起|\+/.test(String(value))) return null;
+  var numbers = String(value).match(/\d+(?:\.\d+)?/g);
+  return numbers ? Number(numbers[numbers.length - 1]) : null;
+}
+
+function budgetMatch(cost, limit) {
+  if (limit == null || cost == null || !Number.isFinite(Number(cost))) return '待确认';
+  var excess = Math.round((Number(cost) - limit) * 100) / 100;
+  if (excess <= 0) return '符合';
+  return '超出 ¥' + excess + (limit > 0 ? '（' + Math.round(excess / limit * 100) + '%）' : '');
+}
+
+function routeWalkingMinutes(route) {
+  if (route.total_walking_minutes != null) return durationMinutes(route.total_walking_minutes);
+  if (!route._raw || !Array.isArray(route._raw.segments)) return null;
+  var segments = route._raw.segments;
+  if (segments.length === 0) return null;
+  if (segments.some(function(s) { return !s.travelMode || (s.travelMode === 'WALKING' && s.travelTimeFromPrevious == null); })) return null;
+  return segments.reduce(function(sum, s) {
+    return sum + (s.travelMode === 'WALKING' ? Number(s.travelTimeFromPrevious) : 0);
+  }, 0);
 }
 
 function fmtDistance(meters) {
@@ -116,10 +152,9 @@ function mapRoute(route) {
 
   // Build transport summary from segments
   const modes = [...new Set((route.segments || []).map((s) => s.travelMode).filter(Boolean))];
-  const transportLabel = modes.length === 0 ? '步行可达'
-    : modes.includes('DRIVING') && modes.includes('WALKING') ? '驾车 + 步行'
-    : modes.includes('DRIVING') ? '驾车'
-    : '步行可达';
+  const modeLabels = { WALKING: '步行', DRIVING: '驾车', TRANSIT: '公交 / 地铁', SUBWAY: '地铁', CYCLING: '骑行' };
+  const transportLabel = modes.length === 0 ? '交通待确认'
+    : modes.map(function(mode) { return modeLabels[mode] || mode; }).join(' + ');
 
   // Risks from violated soft constraints
   const risks = (route.violatedSoftConstraints || []).map((c) => c.description || c.name || '').filter(Boolean);
@@ -151,17 +186,18 @@ function mapRoute(route) {
   }
 
   // Walking distance from segments
-  var totalWalking = (route.segments || []).reduce(function(sum, s) { return sum + (s.travelTimeFromPrevious || 0); }, 0);
+  var totalWalking = routeWalkingMinutes({ _raw: route });
 
   return {
     id: route.id || ('r-' + Math.random().toString(36).slice(2, 8)),
     positioning: tone.positioning,
     tone: tone.tone,
     route_name: route.name || '推荐路线',
-    total_time: fmtDuration(route.totalTravelTime || 0),
+    total_time: fmtDuration(route.totalTravelTime),
+    total_duration_minutes: route.totalTravelTime == null ? null : Number(route.totalTravelTime),
     total_avg: Math.round(route.totalCost || 0),
-    total_distance: fmtDistance(totalWalking * 80) || '步行可达',
-    total_walking_minutes: Math.round(totalWalking),
+    total_distance: '暂无数据',
+    total_walking_minutes: totalWalking == null ? null : Math.round(totalWalking),
     transport: transportLabel,
     pois: poiList,
     reason: route.description || '',
@@ -180,6 +216,7 @@ function mapPlanResponse(data) {
     ? ['综合最优', '少走路', '偏好优先']
     : ['综合最优', '更出片', '更稳妥'];
   routes.forEach((r, i) => {
+    if (data.intent && data.intent.budget != null) r._budgetLimit = budgetLimit(data.intent.budget);
     r.tone = tones[i] || 'green';
     r.positioning = posLabels[i] || '综合最优';
     // Attach preference match tags
@@ -263,6 +300,7 @@ async function smartPlan(query, sessionId, city) {
         ? ['综合最优', '少走路', '偏好优先']
         : ['综合最优', '体验更强', '更稳妥'];
       data._routes.forEach(function(r, i) {
+        if (data.intent && data.intent.budget != null) r._budgetLimit = budgetLimit(data.intent.budget);
         r.tone = tones[i] || 'green';
         r.positioning = posLabels[i] || '综合最优';
         // Attach preference match data from API response
@@ -528,13 +566,18 @@ async function adjustWithFallback(sessionId, adjustment, currentRoutes, city, sc
     if (result.routes.length > 0) return result;
   } catch (e) { console.warn('Backend API unavailable for adjust:', e.message); }
 
-  // Backend unavailable — return demo data
-  console.warn('Backend unavailable for adjust, using demo fallback');
-  var demoRoutes = getDemoRoutes(city || '北京');
+  // A failed adjustment must not look like a newly optimized route.
+  console.warn('Backend unavailable for adjust, keeping the current routes');
+  var demoRoutes = (currentRoutes || []).map(function(route) {
+    return Object.assign({}, route, {
+      _adjustmentFailed: true,
+      _dataWarning: '调整未完成：规划服务暂时不可用，当前保留原路线，请稍后重试。',
+    });
+  });
   return {
     sessionId: sessionId || ('demo-adj-' + Date.now()),
     routes: demoRoutes,
-    warning: '正在使用离线演示数据（后端未连接）',
+    warning: '调整未完成，当前保留原路线',
     recommendedRoute: demoRoutes[0] || null,
   };
 }
@@ -738,6 +781,19 @@ async function fetchSessionDetail(sessionId) {
 
 // ─── Demo data fallback (when backend is unavailable) ──────────────
 function getDemoRoutes(city) {
+  return buildDemoRoutes(city).map(function(route) {
+    route._isDemo = true;
+    route._city = city;
+    route._dataWarning = '当前展示离线演示路线，尚未按你的需求规划。请连接规划服务后重试。';
+    route.positioning = '演示方案';
+    route.constraintMatch = { budget: '待确认', queue: '待确认', open_time: '待确认', distance: '待确认' };
+    delete route._preferenceMatchTags;
+    delete route._preferenceScore;
+    return route;
+  });
+}
+
+function buildDemoRoutes(city) {
   var isBeijing = city === '北京';
   if (isBeijing) {
     return [
@@ -837,6 +893,7 @@ Object.assign(window, {
   planWithFallback, adjustWithFallback,
   mapRoute, mapPlanResponse,
   fmtDuration, fmtDistance,
+  durationMinutes, budgetLimit, budgetMatch, routeWalkingMinutes,
   saveFavorite, getFavorites, deleteFavorite,
   fetchPOIsFromBackend,
   fetchConversationHistory, fetchSessionDetail,

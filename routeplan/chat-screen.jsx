@@ -1021,7 +1021,7 @@ function ChatScreen({
               if (msg.type === 'route') {
                 return (
                   <div key={msg._key || idx} style={{ marginBottom: 14 }}>
-                    {msg.chipLabel && (
+                    {msg.chipLabel && !(msg.routes || []).some(function(r) { return r._adjustmentFailed; }) && (
                       <div style={{ padding: '4px 20px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <div style={{
                           width: 28, height: 28, borderRadius: 999,
@@ -1122,6 +1122,7 @@ function ChatScreen({
             <RouteOptionsCard
               scene={chatState.scene || '朋友聚会'}
               answers={chatState.answers}
+              budget={chatState.nl && chatState.nl.extracted && chatState.nl.extracted.budget}
               defaulted={chatState.defaulted}
               summaryNode={buildSummaryNode(chatState)}
               routes={chatState.routes}

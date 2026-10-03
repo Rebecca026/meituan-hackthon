@@ -134,7 +134,7 @@ function _buildDetailData(route) {
   }
 
   // Fallback: use mock globals, but look up POIs from the selected route
-  var mockRoute = (window.MOCK_ROUTE ? Object.assign({}, window.MOCK_ROUTE) : {});
+  var mockRoute = { route_name: '路线详情', total_time: '暂无数据', total_avg_per_person: null, total_distance: '暂无数据', _isDemo: !!(route && route._isDemo) };
   if (route) {
     if (route.route_name) mockRoute.route_name = route.route_name;
     if (route.total_time) mockRoute.total_time = route.total_time;
@@ -153,9 +153,9 @@ function _buildDetailData(route) {
         category: p.category || '',
         rating: p.rating || 0, review_count: 0,
         avg_price: p.avg_price || p.avgCost || 0,
-        distance: i === 0 ? '距出发地' : '距上一站',
+        distance: '距离待确认',
         opening_hours: p.opening_hours || p.openTime || '—',
-        current_status: '营业中', current_status_short: '营业中', status_tone: 'green',
+        current_status: p.current_status || '营业状态待确认', current_status_short: p.current_status_short || '待确认', status_tone: p.status_tone || 'gray',
         wait_time: p.wait_time || '无需排队',
         tags: p.tags || [], risk_tags: p.riskTags || p.risk_tags || [],
         ugcSummary: p.ugcSummary || '',
@@ -182,7 +182,10 @@ function _buildDetailData(route) {
 
   return {
     places: places,
-    transport: window.MOCK_TRANSPORT || [],
+    transport: places.map(function(p, i) {
+      return { from: i === 0 ? '出发点未设置' : places[i - 1].name, to: p.name,
+        mode: '交通待确认', icon: 'MapPin', time: '暂无数据', distance: '' };
+    }),
     routeInfo: mockRoute,
     stationCount: places.length,
   };
@@ -331,15 +334,11 @@ const MapManager = {
 };
 
 // ─── Gaode Map (uses MapManager) ──────────────────────────────
-function GaodeMap({ places, activeIdx, onMarker, expanded = false }) {
+function GaodeMap({ places, activeIdx, onMarker, expanded = false, onToggle }) {
   const containerRef = useRefRD(null);
   const managerRef = useRefRD(null);
   const H = expanded ? 360 : 220;
   const amapReady = typeof window.AMap !== 'undefined';
-
-  if (!amapReady) {
-    return <MockMapFallback places={places} activeIdx={activeIdx} onMarker={onMarker} expanded={expanded} />;
-  }
 
   useEffectRD(() => {
     if (!containerRef.current || !window.AMap) return;
@@ -354,12 +353,16 @@ function GaodeMap({ places, activeIdx, onMarker, expanded = false }) {
     } catch(e) {
       console.warn('[GaodeMap] init failed:', e.message);
     }
-  }, [places]);
+  }, [places, expanded]);
 
   // Update marker highlights when activeIdx changes
   useEffectRD(function() {
     if (managerRef.current) managerRef.current.highlightNode(activeIdx);
   }, [activeIdx]);
+
+  if (!amapReady) {
+    return <MockMapFallback places={places} activeIdx={activeIdx} onMarker={onMarker} expanded={expanded} onToggle={onToggle} />;
+  }
 
   return (
     <div style={{
@@ -368,8 +371,8 @@ function GaodeMap({ places, activeIdx, onMarker, expanded = false }) {
     }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       {/* expand button */}
-      {!expanded && (
-        <button style={{
+      {onToggle && (
+        <button onClick={onToggle} aria-expanded={expanded} style={{
           position: 'absolute', right: 10, bottom: 10, zIndex: 4,
           background: '#fff', border: 'none', borderRadius: 10,
           padding: '7px 11px', fontSize: 12, fontWeight: 500,
@@ -378,7 +381,7 @@ function GaodeMap({ places, activeIdx, onMarker, expanded = false }) {
           color: '#1d1d1f',
         }}>
           <Icon name="Maximize2" size={12} />
-          展开地图
+          {expanded ? '收起地图' : '展开地图'}
         </button>
       )}
     </div>
@@ -386,7 +389,7 @@ function GaodeMap({ places, activeIdx, onMarker, expanded = false }) {
 }
 
 // ─── SVG fallback when AMap is unavailable ───────────────────
-function MockMapFallback({ places, activeIdx, onMarker, expanded = false }) {
+function MockMapFallback({ places, activeIdx, onMarker, expanded = false, onToggle }) {
   const W = 398,H = expanded ? 360 : 220;
 
   // base streets (procedural-ish)
@@ -402,22 +405,19 @@ function MockMapFallback({ places, activeIdx, onMarker, expanded = false }) {
   // place positions — readjusted for label clearance
   const pts = places.map((p, i) => ({
     ...p, idx: i,
-    x: (p.mock_x || (i + 1) * 25) / 100 * W,
-    y: (p.mock_y || 60 + i * 30) / 100 * H + 6
+    x: places.length === 1 ? W / 2 : 70 + i * (W - 140) / (places.length - 1),
+    y: H * (i % 2 === 0 ? 0.4 : 0.6)
   }));
   const me = { x: 42, y: H - 26 };
 
   // Route segments — show the fastest / most-convenient mode per leg.
   // `side` = perpendicular offset direction (+1 / -1) to keep labels off the line.
   // `gap`  = how far perpendicular to the line in px (raised so labels never sit on the line).
-  const segments = [
-  { from: me, to: pts[0], mode: '地铁', time: '8 min', icon: 'TrainFront', color: '#2456a6', side: -1, gap: 40, t: 0.42 },
-  { from: pts[0], to: pts[1], mode: '步行', time: '9 min', icon: 'Footprints', color: '#2c7a44', side: -1, gap: 30, t: 0.5 },
-  { from: pts[1], to: pts[2], mode: '步行', time: '6 min', icon: 'Footprints', color: '#2c7a44', side: 1, gap: 28, t: 0.5 }];
+  const segments = [];
 
 
   // route polyline
-  const path = `M ${me.x} ${me.y} ` + pts.map((p) => `L ${p.x} ${p.y}`).join(' ');
+  const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
 
   // Place name labels — above or below the marker (never to the side).
   const labelOrientation = ['above', 'below', 'above'];
@@ -483,7 +483,7 @@ function MockMapFallback({ places, activeIdx, onMarker, expanded = false }) {
         borderRadius: 5, padding: '2px 6px',
         fontSize: 10.5, fontWeight: 600, color: '#2456a6',
         whiteSpace: 'nowrap', boxShadow: '0 1px 2px rgba(0,0,0,0.06)'
-      }}>我的位置</div>
+      }}>示意图 · 非导航地图</div>
 
       {/* Place name labels — directly above or below each marker */}
       {pts.map((p, i) => {
@@ -549,25 +549,9 @@ function MockMapFallback({ places, activeIdx, onMarker, expanded = false }) {
 
       })}
 
-      {/* Top-left price summary chip — answers "how much per person" without leaving the map */}
-      <div style={{
-        position: 'absolute', left: 10, top: 10, zIndex: 4,
-        display: 'inline-flex', alignItems: 'center', gap: 5,
-        background: 'rgba(255,255,255,0.96)',
-        border: '0.5px solid rgba(0,0,0,0.05)',
-        borderRadius: 10, padding: '5px 9px 5px 8px',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-        fontSize: 11.5, color: '#1d1d1f',
-        whiteSpace: 'nowrap', lineHeight: 1, opacity: "0"
-      }}>
-        <Icon name="Wallet" size={12} color="#1a1a1a" />
-        <span></span>
-        <span className="num" style={{ fontWeight: 700, color: '#1a1a1a' }}>¥{MOCK_ROUTE.total_avg_per_person}</span>
-      </div>
-
       {/* expand button */}
-      {!expanded &&
-      <button style={{
+      {onToggle &&
+      <button onClick={onToggle} aria-expanded={expanded} style={{
         position: 'absolute', right: 10, bottom: 10, zIndex: 4,
         background: '#fff', border: 'none', borderRadius: 10,
         padding: '7px 11px', fontSize: 12, fontWeight: 500,
@@ -576,7 +560,7 @@ function MockMapFallback({ places, activeIdx, onMarker, expanded = false }) {
         color: '#1d1d1f'
       }}>
           <Icon name="Maximize2" size={12} />
-          展开地图
+          {expanded ? '收起地图' : '展开地图'}
         </button>
       }
     </div>);
@@ -729,7 +713,7 @@ function OverviewCard({ routeInfo }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <span style={{ fontSize: 14.5, fontWeight: 700 }}>{r.route_name || '推荐路线'}</span>
-          <StatusPill tone="green">已优化</StatusPill>
+          {r._isDemo ? <StatusPill tone="amber">演示路线</StatusPill> : null}
         </div>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 8,
@@ -878,7 +862,7 @@ function PlaceBlock({ place, index, active, onClick, onDetail, onSwap, onImageOp
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
               <Icon name="Star" size={11} color="#1a1a1a" />
               <span className="num" style={{ color: '#1a1a1a', fontWeight: 600 }}>{place.rating}</span>
-              <span style={{ color: '#8e8e93' }} className="num">· {place.review_count}</span>
+              {place.review_count > 0 && <span style={{ color: '#8e8e93' }} className="num">· {place.review_count} 条评价</span>}
             </span>
             <span style={{ color: '#D1D1D6' }}>·</span>
             <span>人均 <span className="num" style={{ fontWeight: 600 }}>¥{place.avg_price}</span></span>
@@ -914,7 +898,7 @@ function PlaceBlock({ place, index, active, onClick, onDetail, onSwap, onImageOp
       ) : null}
 
       {/* image gallery — real photos with gradient fallback */}
-      <div style={{
+      {place.images && place.images.length > 0 && <div style={{
         background: '#F7F7F8', borderRadius: 10, padding: '8px 9px 9px',
         marginBottom: 10, border: '1px solid #EDEDEF'
       }}>
@@ -940,7 +924,7 @@ function PlaceBlock({ place, index, active, onClick, onDetail, onSwap, onImageOp
           }}
           className="frame-scroll">
 
-          {[0, 1, 2, 3].map((i) => {
+          {place.images.map((_, i) => {
             const imgSrc = (place.images && place.images[i]) || (i === 0 && place.imageUrl) || '';
             const hasImg = imgSrc.length > 0;
             return (
@@ -969,7 +953,7 @@ function PlaceBlock({ place, index, active, onClick, onDetail, onSwap, onImageOp
             );
           })}
         </div>
-      </div>
+      </div>}
 
       {/* action — single CTA */}
       <div>
@@ -1092,7 +1076,7 @@ function DepartureInline({ t, onToast, onNavigate }) {
           fontSize: 12.5, color: '#1d1d1f', flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
         }}>
-          {(t.metro_line && t.station) ? (t.metro_line + ' · ' + t.station + ' ' + (t.exit || '')) : '从当前位置出发'}
+          {(t.metro_line && t.station) ? (t.metro_line + ' · ' + t.station + ' ' + (t.exit || '')) : t.from || '出发点未设置'}
         </span>
       </div>
       <div style={{
@@ -1104,7 +1088,7 @@ function DepartureInline({ t, onToast, onNavigate }) {
           fontSize: 11.5, color: '#8e8e93',
           display: 'inline-flex', alignItems: 'baseline', gap: 5
         }}>
-          <span>{t.walking_time || '—'}</span>
+          <span>{t.walking_time || t.time || '暂无数据'}</span>
           <span style={{ color: '#D1D1D6' }}>/</span>
           <span>{t.distance || '—'}</span>
         </span>
@@ -1127,10 +1111,10 @@ function DepartureInline({ t, onToast, onNavigate }) {
 function Timeline({ activeIdx, setActiveIdx, onToast, onImageOpen, onOpenDetail, registerCardRef, places, transport, onNavigateToMap }) {
   const p = places || window.MOCK_PLACES || [];
   // Build or pad transport so it always has enough entries for places
-  var t = transport || window.MOCK_TRANSPORT || [];
+  var t = (transport || []).slice();
   // Pad with synthetic entries if transport is too short for places
   while (t.length < p.length + 1) {
-    t.push({ from: p[t.length - 1] ? p[t.length - 1].name : '上一站', to: p[t.length] ? p[t.length].name : '下一站', mode: '步行', icon: 'Footprints', walking_time: '5 分钟', distance: '' });
+    t.push({ from: p[t.length - 1] ? p[t.length - 1].name : '出发点未设置', to: p[t.length] ? p[t.length].name : '返程', mode: '交通待确认', icon: 'MapPin', time: '暂无数据', distance: '' });
   }
   const RAIL_X = 18; // x-center of the rail
   const NODE = 26; // station circle diameter
@@ -1260,7 +1244,7 @@ function Timeline({ activeIdx, setActiveIdx, onToast, onImageOpen, onOpenDetail,
           <span>行程结束 · 返程参考</span>
           <span style={{ color: '#D1D1D6' }}>·</span>
           <span className="num" style={{ color: '#8e8e93' }}>
-            步行 5 分到地铁，打车约 ¥20
+            返程时间与费用待确认
           </span>
         </div>
         <button onClick={() => {
@@ -1273,7 +1257,7 @@ function Timeline({ activeIdx, setActiveIdx, onToast, onImageOpen, onOpenDetail,
           display: 'inline-flex', alignItems: 'center', gap: 1, padding: '2px 0',
           whiteSpace: 'nowrap', flexShrink: 0
         }}>
-          导航回家
+          查看末站位置
           <Icon name="ChevronRight" size={12} color="#1a1a1a" />
         </button>
       </div>
@@ -1534,6 +1518,7 @@ function RouteDetailScreen({ route, onBack, toast, setToast }) {
   const firstPlace = places.length > 0 ? places[0] : null;
 
   const [activeIdx, setActiveIdx] = useStateRD(0);
+  const [mapExpanded, setMapExpanded] = useStateRD(false);
   const [lightbox, setLightbox] = useStateRD({ open: false, place: null, imgIdx: 0 });
   const [detailPlace, setDetailPlace] = useStateRD(null);
   const [showMapChooser, setShowMapChooser] = useStateRD(false);
@@ -1607,11 +1592,12 @@ function RouteDetailScreen({ route, onBack, toast, setToast }) {
       }}>
         {/* map */}
         <div style={{ padding: '12px 14px 12px' }}>
-          <GaodeMap places={places} activeIdx={activeIdx} onMarker={handleMarkerClick} />
+          <GaodeMap places={places} activeIdx={activeIdx} onMarker={handleMarkerClick} expanded={mapExpanded} onToggle={() => setMapExpanded(!mapExpanded)} />
         </div>
 
         {/* compact overview */}
         <OverviewCard routeInfo={routeInfo} />
+        {route._dataWarning && <div role="status" style={{ margin: '12px 14px', padding: 12, background: '#FFF1DE', color: '#9C4200', borderRadius: 10, fontSize: 12 }}>{route._dataWarning}</div>}
 
         {/* constraint match status */}
         <ConstraintMatchCard constraintMatch={route.constraintMatch} />
